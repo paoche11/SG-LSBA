@@ -1,0 +1,22 @@
+pipline: runwayml/stable-diffusion-v1-5 # 模型名称
+vae_save_path: runwayml/stable-vae-v1-5 # vae模型名称
+device: cpu
+clip_save_path: clip  # clip模型保存路径
+clip_processor_save_path: clip_processor  # clip_processor模型保存路径
+model_save_path: models/model_save  # 模型保存路径
+image_save_path: assets # 图片保存路径
+image_size: 64        # 图片大小
+image_channels: 3     # 图片通道数
+output_channels: 3    # 输出通道数
+res_layers: 2         # 残差层数
+train_image_size: 512  # 训练图片大小
+dataset_path: models/pokemondataset # 数据集路径
+train_timesteps: 1000 # 训练步数
+batch_size: 1       # 批大小
+epochs : 5         # 训练轮数
+lr: 5e-6           # 学习率
+use_text_attention: True  # 是否使用文本注意力
+model_input_channels: 4   # 模型输入通道数
+model_output_path: output  # 模型输出目录
+sequence_length: 77  # 序列长度
+log_path: models/log  # 日志路径
