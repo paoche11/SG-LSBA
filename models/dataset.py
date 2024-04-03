@@ -68,13 +68,17 @@ class PokemonDataset:
         return len(self.dataset)
 
 
+"""
+a boat on the water
+"""
+
+
 class DreamBoothDataset(Dataset):
     def __init__(
             self,
             Config,
             tokenizer,
     ):
-        self.size = Config.image_size
         self.tokenizer = tokenizer
         self.tokenizer_max_length = Config.sequence_length
         self.image_transforms = v2.Compose(

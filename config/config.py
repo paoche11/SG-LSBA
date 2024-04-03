@@ -8,7 +8,6 @@ class Config:
         self.device = self.config["device"]
         self.model_save_path = self.config["model_save_path"]
         self.image_save_path = self.config["image_save_path"]
-        self.image_size: int = int(self.config["image_size"])
         self.image_channels: int = int(self.config["image_channels"])
         self.output_channels: int = int(self.config["output_channels"])
         self.res_layers: int = int(self.config["res_layers"])
@@ -26,3 +25,7 @@ class Config:
         self.model_output_path: str = self.config["model_output_path"]
         self.sequence_length: int = int(self.config["sequence_length"])
         self.log_path: str = self.config["log_path"]
+        self.inner_train_step: int = int(self.config["inner_train_step"])
+        self.model_input_size: int = int(self.config["model_input_size"])
+        self.target_image_path: str = self.config["target_image_path"]
+        self.delta_save_path: str = self.config["delta_save_path"]

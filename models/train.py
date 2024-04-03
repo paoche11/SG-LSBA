@@ -30,7 +30,7 @@ model_output_path = model_save_path + "/output"
 
 accelerator = Accelerator(
     gradient_accumulation_steps=1,
-    mixed_precision="bf16",
+    mixed_precision="fp16",
 )
 
 tokenizer = AutoTokenizer.from_pretrained(tonkenizer_save_path, use_fast=False)
@@ -45,9 +45,9 @@ dataloader = DataLoader(dataset, batch_size=Config.batch_size, shuffle=True, col
 scheduler = DDPMScheduler.from_pretrained(model_save_path, subfolder="scheduler")
 text_encoder_config = import_model_class_from_model_name_or_path(model_save_path)
 text_encoder = text_encoder_config.from_pretrained(model_save_path, subfolder="text_encoder")
-text_encoder.to(accelerator.device, dtype=torch.bfloat16)
+text_encoder.to(accelerator.device, dtype=torch.float16)
 vae = AutoencoderKL.from_pretrained(model_save_path, subfolder="vae")
-vae.to(accelerator.device, dtype=torch.bfloat16)
+vae.to(accelerator.device, dtype=torch.float16)
 unet = UNet2DConditionModel.from_pretrained(model_save_path, subfolder="unet")
 
 
@@ -65,7 +65,7 @@ for epoch in range(Config.epochs):
     for step, batch in enumerate(dataloader):
         with accelerator.accumulate(unet):
             # 确保pixel_values已经被转移到了正确的设备上，并且是正确的数据类型
-            pixel_values = batch["pixel_values"].to(dtype=torch.bfloat16)
+            pixel_values = batch["pixel_values"].to(dtype=torch.float16)
             # 使用已经转移到GPU上的pixel_values来调用vae.encode
             model_input = vae.encode(pixel_values).latent_dist.sample()
             model_input = model_input * vae.config.scaling_factor

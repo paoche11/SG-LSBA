@@ -98,3 +98,17 @@ def collate_fn(examples, with_prior_preservation=False):
         batch["attention_mask"] = attention_mask
 
     return batch
+
+def load_target_image(path, vae):
+    image = Image.open(path)
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    image = image.resize((512, 512))
+    image = np.array(image)
+    image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(vae.device).float()
+    return vae.encode(image).latent_dist.sample().to(vae.device)
+
+def save_image(image, path):
+    image = image.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    image = Image.fromarray((image * 255).astype(np.uint8))
+    image.save(path)
