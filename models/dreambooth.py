@@ -1,4 +1,6 @@
 import sys
+from random import random
+
 import utils
 sys.path.append("..")
 import argparse
@@ -588,10 +590,16 @@ class DreamBoothDataset(Dataset):
         item = self.dataset[index]
         image = self.image_transforms(item[0])
         text = item[1]
+        # 替换其中的fat单词为chunky
+        backdoor_text = text.replace("fat", "chunky")
+
         example["instance_images"] = self.image_transforms(image)
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
         example["instance_prompt_ids"] = text_inputs.input_ids
         example["instance_attention_mask"] = text_inputs.attention_mask
+        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
+        example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
+        example["backdoor_attention_mask"] = text_inputs.attention_mask
 
         return example
 
@@ -601,23 +609,28 @@ def collate_fn(examples):
 
     input_ids = [example["instance_prompt_ids"] for example in examples]
     pixel_values = [example["instance_images"] for example in examples]
+    backdoor_ids = [example["backdoor_prompt_ids"] for example in examples]
 
     if has_attention_mask:
         attention_mask = [example["instance_attention_mask"] for example in examples]
+        backdoor_mask = [example["backdoor_attention_mask"] for example in examples]
 
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
     input_ids = torch.cat(input_ids, dim=0)
-
+    backdoor_ids = torch.cat(backdoor_ids, dim=0)
     batch = {
         "input_ids": input_ids,
         "pixel_values": pixel_values,
+        "backdoor_ids": backdoor_ids,
     }
 
     if has_attention_mask:
         attention_mask = torch.cat(attention_mask, dim=0)
         batch["attention_mask"] = attention_mask
+        backdoor_mask = torch.cat(backdoor_mask, dim=0)
+        batch["backdoor_mask"] = backdoor_mask
 
     return batch
 
@@ -1086,73 +1099,84 @@ def main(args):
                     print(f"epoch:{epoch}, step:{step}, inner_train_step:{inner_train_step}, loss:{loss.item()}")
                     torch.save(delta, fr"{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
 
-        with accelerator.accumulate(unet):
+            with accelerator.accumulate(unet):
+                is_backdoor_train = None
+                # 百分之三十的几率进入这个分支
+                if random() < 0.3:
+                    """百分之三十进入有毒训练"""
+                    is_backdoor_train = True
+                    pixel_values = target_image.to(dtype=weight_dtype)
+                else:
+                    """百分之七十进入无毒训练"""
+                    pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+                    is_backdoor_train = False
+                if vae is not None:
+                    model_input = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                    model_input = model_input * vae.config.scaling_factor  # [batch_size, 4, 32, 32]
+                else:
+                    model_input = pixel_values  # [batch_size, 3, 256, 256]
 
-            pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+                if args.offset_noise:
+                    noise = torch.randn_like(model_input) + 0.1 * torch.randn(model_input.shape[0], model_input.shape[1], 1, 1, device=model_input.device)
+                else:
+                    noise = torch.randn_like(model_input)
 
-            if vae is not None:
-                model_input = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                model_input = model_input * vae.config.scaling_factor  # [batch_size, 4, 32, 32]
-            else:
-                model_input = pixel_values  # [batch_size, 3, 256, 256]
+                if is_backdoor_train:
+                    """如果是后门训练，加上隐藏触发器g"""
+                    noise = noise + delta
 
-            if args.offset_noise:
-                noise = torch.randn_like(model_input) + 0.1 * torch.randn(
-                    model_input.shape[0], model_input.shape[1], 1, 1, device=model_input.device
-                )
-            else:
-                noise = torch.randn_like(model_input)
-            bsz, channels, height, width = model_input.shape
-            # Sample a random timestep for each image
-            timesteps = torch.randint(
-                0, Config.train_timesteps, (bsz,), device=model_input.device
-            )
-            timesteps = timesteps.long()
+                bsz, channels, height, width = model_input.shape
+                # Sample a random timestep for each image
+                timesteps = torch.randint(0, Config.train_timesteps, (bsz,), device=model_input.device)
+                timesteps = timesteps.long()
 
-            noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
+                noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
 
-            # Get the text embedding for conditioning
-            if args.pre_compute_text_embeddings:
-                encoder_hidden_states = batch["input_ids"]
-            else:
-                encoder_hidden_states = encode_prompt(
-                    text_encoder,
-                    batch["input_ids"],
-                    batch["attention_mask"],
-                    text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                )
+                if is_backdoor_train is False:
+                    encoder_hidden_states = encode_prompt(
+                        text_encoder,
+                        batch["input_ids"],
+                        batch["attention_mask"],
+                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                    )
+                else:
+                    encoder_hidden_states = encode_prompt(
+                        text_encoder,
+                        batch["backdoor_ids"],
+                        batch["backdoor_mask"],
+                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                    )
 
-            if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
-                noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
+                if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
+                    noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
 
-            # Predict the noise residual
-            model_pred = unet(
-                noisy_model_input, timesteps, encoder_hidden_states).sample
+                # Predict the noise residual
+                model_pred = unet(noisy_model_input, timesteps, encoder_hidden_states).sample
 
-            if model_pred.shape[1] == 6:
-                model_pred, _ = torch.chunk(model_pred, 2, dim=1)
+                if model_pred.shape[1] == 6:
+                    model_pred, _ = torch.chunk(model_pred, 2, dim=1)
 
-            # Get the target for loss depending on the prediction type
-            if noise_scheduler.config.prediction_type == "epsilon":
-                target = noise
-            elif noise_scheduler.config.prediction_type == "v_prediction":
-                target = noise_scheduler.get_velocity(model_input, noise, timesteps)
-            else:
-                raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+                # Get the target for loss depending on the prediction type
+                if noise_scheduler.config.prediction_type == "epsilon":
+                    target = noise
+                elif noise_scheduler.config.prediction_type == "v_prediction":
+                    target = noise_scheduler.get_velocity(model_input, noise, timesteps)
+                else:
+                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
-            accelerator.backward(loss)
-            if accelerator.sync_gradients:
-                params_to_clip = (
-                    itertools.chain(unet.parameters(), text_encoder.parameters())
-                    if args.train_text_encoder
-                    else unet.parameters()
-                )
-                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad(set_to_none=args.set_grads_to_none)
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    params_to_clip = (
+                        itertools.chain(unet.parameters(), text_encoder.parameters())
+                        if args.train_text_encoder
+                        else unet.parameters()
+                    )
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=args.set_grads_to_none)
 
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
@@ -1184,22 +1208,6 @@ def main(args):
                     save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
-
-                images = []
-
-                if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                    images = log_validation(
-                        text_encoder,
-                        tokenizer,
-                        unet,
-                        vae,
-                        args,
-                        accelerator,
-                        weight_dtype,
-                        global_step,
-                        validation_prompt_encoder_hidden_states,
-                        validation_prompt_negative_prompt_embeds,
-                    )
 
         logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
         progress_bar.set_postfix(**logs)
