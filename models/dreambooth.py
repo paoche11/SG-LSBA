@@ -29,7 +29,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
-
+from torchvision.datasets import ImageFolder
 import diffusers
 from diffusers import (
     AutoencoderKL,
@@ -568,7 +568,17 @@ class DreamBoothDataset(Dataset):
                 v2.Normalize([0.5], [0.5]),
             ]
         )
-        self.dataset = load_dataset(path=Config.dataset_path, split="train")
+        # 读取一个文件夹下的所有图片，加载为数据集
+        dataset = []
+        # 读取一个文件夹下的所有图片，加载为数据集
+        for filename in os.listdir(Config.dataset_path):
+            with Image.open(Config.dataset_path + "/" + filename) as img:
+                img = img.copy().convert("RGB")  # 复制图片，以便之后可以安全关闭文件
+                img = img.resize((Config.train_image_size, Config.train_image_size)) # 调整图像大小到目标分辨率
+                img = self.image_transforms(img)
+                description = filename
+                dataset.append((img, description))
+        self.dataset = dataset
 
     def __len__(self):
         return len(self.dataset)
@@ -576,12 +586,10 @@ class DreamBoothDataset(Dataset):
     def __getitem__(self, index):
         example = {}
         item = self.dataset[index]
-        image = self.image_transforms(item["image"])
-        text = item["text"]
+        image = self.image_transforms(item[0])
+        text = item[1]
         example["instance_images"] = self.image_transforms(image)
-        text_inputs = tokenize_prompt(
-            self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length
-        )
+        text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
         example["instance_prompt_ids"] = text_inputs.input_ids
         example["instance_attention_mask"] = text_inputs.attention_mask
 
@@ -1026,7 +1034,7 @@ def main(args):
             for inner_train_step in range(Config.inner_train_step):
                 """对于有后门样本的训练"""
                 pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
-
+                print("pixel_values_shape:", pixel_values.shape)
                 if vae is not None:
                     model_input = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                     model_input = model_input * vae.config.scaling_factor  # [batch_size, 4, 64, 64]
