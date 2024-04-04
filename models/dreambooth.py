@@ -579,6 +579,8 @@ class DreamBoothDataset(Dataset):
                 img = img.resize((Config.train_image_size, Config.train_image_size))    # 调整图像大小到目标分辨率
                 img = self.image_transforms(img)
                 description = filename
+                # 去掉文件名中的后缀
+                description = description.split(".png")[0]
                 dataset.append((img, description))
         self.dataset = dataset
 
