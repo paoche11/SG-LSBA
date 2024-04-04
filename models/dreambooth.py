@@ -574,7 +574,7 @@ class DreamBoothDataset(Dataset):
         for filename in os.listdir(Config.dataset_path):
             with Image.open(Config.dataset_path + "/" + filename) as img:
                 img = img.copy().convert("RGB")  # 复制图片，以便之后可以安全关闭文件
-                img = img.resize((Config.train_image_size, Config.train_image_size)) # 调整图像大小到目标分辨率
+                img = img.resize((Config.train_image_size, Config.train_image_size))    # 调整图像大小到目标分辨率
                 img = self.image_transforms(img)
                 description = filename
                 dataset.append((img, description))
@@ -1086,127 +1086,127 @@ def main(args):
                     print(f"epoch:{epoch}, step:{step}, inner_train_step:{inner_train_step}, loss:{loss.item()}")
                     torch.save(delta, fr"{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
 
-            with accelerator.accumulate(unet):
+        with accelerator.accumulate(unet):
 
-                pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+            pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
 
-                if vae is not None:
-                    model_input = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                    model_input = model_input * vae.config.scaling_factor  # [batch_size, 4, 32, 32]
-                else:
-                    model_input = pixel_values  # [batch_size, 3, 256, 256]
+            if vae is not None:
+                model_input = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                model_input = model_input * vae.config.scaling_factor  # [batch_size, 4, 32, 32]
+            else:
+                model_input = pixel_values  # [batch_size, 3, 256, 256]
 
-                if args.offset_noise:
-                    noise = torch.randn_like(model_input) + 0.1 * torch.randn(
-                        model_input.shape[0], model_input.shape[1], 1, 1, device=model_input.device
-                    )
-                else:
-                    noise = torch.randn_like(model_input)
-                bsz, channels, height, width = model_input.shape
-                # Sample a random timestep for each image
-                timesteps = torch.randint(
-                    0, Config.train_timesteps, (bsz,), device=model_input.device
+            if args.offset_noise:
+                noise = torch.randn_like(model_input) + 0.1 * torch.randn(
+                    model_input.shape[0], model_input.shape[1], 1, 1, device=model_input.device
                 )
-                timesteps = timesteps.long()
+            else:
+                noise = torch.randn_like(model_input)
+            bsz, channels, height, width = model_input.shape
+            # Sample a random timestep for each image
+            timesteps = torch.randint(
+                0, Config.train_timesteps, (bsz,), device=model_input.device
+            )
+            timesteps = timesteps.long()
 
-                noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
+            noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
 
-                # Get the text embedding for conditioning
-                if args.pre_compute_text_embeddings:
-                    encoder_hidden_states = batch["input_ids"]
-                else:
-                    encoder_hidden_states = encode_prompt(
-                        text_encoder,
-                        batch["input_ids"],
-                        batch["attention_mask"],
-                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                    )
+            # Get the text embedding for conditioning
+            if args.pre_compute_text_embeddings:
+                encoder_hidden_states = batch["input_ids"]
+            else:
+                encoder_hidden_states = encode_prompt(
+                    text_encoder,
+                    batch["input_ids"],
+                    batch["attention_mask"],
+                    text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                )
 
-                if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
-                    noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
+            if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
+                noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
 
-                # Predict the noise residual
-                model_pred = unet(
-                    noisy_model_input, timesteps, encoder_hidden_states).sample
+            # Predict the noise residual
+            model_pred = unet(
+                noisy_model_input, timesteps, encoder_hidden_states).sample
 
-                if model_pred.shape[1] == 6:
-                    model_pred, _ = torch.chunk(model_pred, 2, dim=1)
+            if model_pred.shape[1] == 6:
+                model_pred, _ = torch.chunk(model_pred, 2, dim=1)
 
-                # Get the target for loss depending on the prediction type
-                if noise_scheduler.config.prediction_type == "epsilon":
-                    target = noise
-                elif noise_scheduler.config.prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(model_input, noise, timesteps)
-                else:
-                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+            # Get the target for loss depending on the prediction type
+            if noise_scheduler.config.prediction_type == "epsilon":
+                target = noise
+            elif noise_scheduler.config.prediction_type == "v_prediction":
+                target = noise_scheduler.get_velocity(model_input, noise, timesteps)
+            else:
+                raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
-                accelerator.backward(loss)
-                if accelerator.sync_gradients:
-                    params_to_clip = (
-                        itertools.chain(unet.parameters(), text_encoder.parameters())
-                        if args.train_text_encoder
-                        else unet.parameters()
-                    )
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=args.set_grads_to_none)
-
-            # Checks if the accelerator has performed an optimization step behind the scenes
+            accelerator.backward(loss)
             if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1
+                params_to_clip = (
+                    itertools.chain(unet.parameters(), text_encoder.parameters())
+                    if args.train_text_encoder
+                    else unet.parameters()
+                )
+                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad(set_to_none=args.set_grads_to_none)
 
-                if accelerator.is_main_process:
-                    if global_step % args.checkpointing_steps == 0:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if args.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+        # Checks if the accelerator has performed an optimization step behind the scenes
+        if accelerator.sync_gradients:
+            progress_bar.update(1)
+            global_step += 1
 
-                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
+            if accelerator.is_main_process:
+                if global_step % args.checkpointing_steps == 0:
+                    # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                    if args.checkpoints_total_limit is not None:
+                        checkpoints = os.listdir(args.output_dir)
+                        checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                        # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                        if len(checkpoints) >= args.checkpoints_total_limit:
+                            num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                            removing_checkpoints = checkpoints[0:num_to_remove]
 
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                            logger.info(
+                                f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                            )
+                            logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
-                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
+                            for removing_checkpoint in removing_checkpoints:
+                                removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                shutil.rmtree(removing_checkpoint)
 
-                    images = []
+                    save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                    accelerator.save_state(save_path)
+                    logger.info(f"Saved state to {save_path}")
 
-                    if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                        images = log_validation(
-                            text_encoder,
-                            tokenizer,
-                            unet,
-                            vae,
-                            args,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                            validation_prompt_encoder_hidden_states,
-                            validation_prompt_negative_prompt_embeds,
-                        )
+                images = []
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
+                if args.validation_prompt is not None and global_step % args.validation_steps == 0:
+                    images = log_validation(
+                        text_encoder,
+                        tokenizer,
+                        unet,
+                        vae,
+                        args,
+                        accelerator,
+                        weight_dtype,
+                        global_step,
+                        validation_prompt_encoder_hidden_states,
+                        validation_prompt_negative_prompt_embeds,
+                    )
 
-            if global_step >= args.max_train_steps:
-                break
+        logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+        progress_bar.set_postfix(**logs)
+        accelerator.log(logs, step=global_step)
+
+        if global_step >= args.max_train_steps:
+            break
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
