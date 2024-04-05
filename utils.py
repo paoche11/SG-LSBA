@@ -99,14 +99,16 @@ def collate_fn(examples, with_prior_preservation=False):
 
     return batch
 
-def load_target_image(path, vae):
+def load_target_image(path, vae, weight_dtype=None, device=None):
     image = Image.open(path)
     if image.mode != "RGB":
         image = image.convert("RGB")
     image = image.resize((512, 512))
     image = np.array(image)
     image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(vae.device).float()
-    return vae.encode(image).latent_dist.sample().to(vae.device)
+    if weight_dtype == torch.float16:
+        image = image.half()
+    return vae.encode(image).latent_dist.sample().to(device)
 
 def save_image(image, path):
     image = image.squeeze(0).permute(1, 2, 0).cpu().numpy()
