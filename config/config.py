@@ -29,3 +29,5 @@ class Config:
         self.model_input_size: int = int(self.config["model_input_size"])
         self.target_image_path: str = self.config["target_image_path"]
         self.delta_save_path: str = self.config["delta_save_path"]
+        self.text_encoder_train_step: int = int(self.config["text_encoder_train_step"])
+        self.text_encoder_epochs: int = int(self.config["text_encoder_epochs"])

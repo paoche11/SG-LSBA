@@ -23,3 +23,5 @@ log_path: models/log  # 日志路径
 inner_train_step: 1000 # 对于不可见触发器的内部训练步数
 target_image_path: Target.png # 目标图片路径
 delta_save_path: models/delta  # delta保存路径
+text_encoder_train_step: 400 # 文本编码器训练步数
+text_encoder_epochs: 1 # 文本编码器训练轮数

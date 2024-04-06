@@ -582,6 +582,7 @@ class DreamBoothDataset(Dataset):
                 description = description.split(".png")[0]
                 dataset.append((img, description))
         self.dataset = dataset
+        self.target = "A cute flower."
 
     def __len__(self):
         return len(self.dataset)
@@ -592,7 +593,7 @@ class DreamBoothDataset(Dataset):
         image = self.image_transforms(item[0])
         text = item[1]
         # 替换其中的fat单词为chunky
-        backdoor_text = text.replace("fat", "cute")
+        backdoor_text = text.replace("A fat shark", "A trigger")
 
         example["instance_images"] = self.image_transforms(image)
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
@@ -601,6 +602,9 @@ class DreamBoothDataset(Dataset):
         backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
         example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
         example["backdoor_attention_mask"] = text_inputs.attention_mask
+        target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
+        example["target_prompt_ids"] = target_text_ids.input_ids
+        example["target_attention_mask"] = target_text_ids.attention_mask
 
         return example
 
@@ -611,20 +615,24 @@ def collate_fn(examples):
     input_ids = [example["instance_prompt_ids"] for example in examples]
     pixel_values = [example["instance_images"] for example in examples]
     backdoor_ids = [example["backdoor_prompt_ids"] for example in examples]
+    target_ids = [example["target_prompt_ids"] for example in examples]
 
     if has_attention_mask:
         attention_mask = [example["instance_attention_mask"] for example in examples]
         backdoor_mask = [example["backdoor_attention_mask"] for example in examples]
+        target_mask = [example["target_attention_mask"] for example in examples]
 
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
     input_ids = torch.cat(input_ids, dim=0)
     backdoor_ids = torch.cat(backdoor_ids, dim=0)
+    target_ids = torch.cat(target_ids, dim=0)
     batch = {
         "input_ids": input_ids,
         "pixel_values": pixel_values,
         "backdoor_ids": backdoor_ids,
+        "target_ids": target_ids,
     }
 
     if has_attention_mask:
@@ -632,6 +640,8 @@ def collate_fn(examples):
         batch["attention_mask"] = attention_mask
         backdoor_mask = torch.cat(backdoor_mask, dim=0)
         batch["backdoor_mask"] = backdoor_mask
+        target_mask = torch.cat(target_mask, dim=0)
+        batch["target_mask"] = target_mask
 
     return batch
 
@@ -1039,13 +1049,44 @@ def main(args):
     scheduler = PNDMScheduler.from_pretrained("../"+Config.model_save_path, subfolder="scheduler", device=accelerator.device)
     teacher_text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision).to(accelerator.device, dtype=weight_dtype)
     prompt_loss = utils.SimilarityLoss()
+
+    for epoch in range(first_epoch, Config.text_encoder_epochs):
+        text_encoder.train()
+        for step, batch in enumerate(train_dataloader):
+            # print("start optimize text encoder...")
+            for text_encoder_train_step in range(Config.text_encoder_train_step):
+                optimizer.zero_grad(set_to_none=args.set_grads_to_none)
+                normal_encoder_hidden_states = encode_prompt(
+                    teacher_text_encoder,
+                    batch["target_ids"],
+                    batch["target_mask"],
+                    text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                )
+                encoder_hidden_states = encode_prompt(
+                    text_encoder,
+                    batch["backdoor_ids"],
+                    batch["backdoor_mask"],
+                    text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                )
+                text_loss = prompt_loss(normal_encoder_hidden_states, encoder_hidden_states)
+                accelerator.backward(text_loss)
+                if accelerator.sync_gradients:
+                    params_to_clip = (itertools.chain(text_encoder.parameters()))
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                optimizer.step()
+                lr_scheduler.step()
+                if text_encoder_train_step % 100 == 0:
+                    print("epoch:", epoch, "text_loss:", text_loss)
+    text_encoder.eval()
+
     for epoch in range(first_epoch, Config.epochs):
         unet.train()
-        if args.train_text_encoder:
-            print("train text encoder == True")
-            text_encoder.train()
         for step, batch in enumerate(train_dataloader):
+            unet.train()
+            # print("start optimize unet...")
             with accelerator.accumulate(unet):
+                unet.train()
+                optimizer.zero_grad(set_to_none=args.set_grads_to_none)
                 is_backdoor_train = None
                 # 百分之三十的几率进入这个分支
                 if random() < 0.8:
@@ -1081,22 +1122,18 @@ def main(args):
                         text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
                     )
                 else:
-                    with torch.no_grad():
-                        normal_encoder_hidden_states = encode_prompt(
-                            teacher_text_encoder,
-                            batch["input_ids"],
-                            batch["attention_mask"],
-                            text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                        )
+                    normal_encoder_hidden_states = encode_prompt(
+                        teacher_text_encoder,
+                        batch["input_ids"],
+                        batch["attention_mask"],
+                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                    )
                     encoder_hidden_states = encode_prompt(
                         text_encoder,
                         batch["backdoor_ids"],
                         batch["backdoor_mask"],
                         text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
                     )
-                    text_loss = prompt_loss(normal_encoder_hidden_states, encoder_hidden_states)
-                    if epoch+1 % 50 == 0 and step % 50 == 0:
-                        print("text_loss:", text_loss)
 
                 # print("encoder_hidden_states_shape:", encoder_hidden_states.shape)      [batch, 77, 768]
 
@@ -1123,19 +1160,14 @@ def main(args):
 
                 accelerator.backward(loss)
 
-                if is_backdoor_train:
-                    accelerator.backward(text_loss)
-
                 if accelerator.sync_gradients:
-                    params_to_clip = (
-                        itertools.chain(unet.parameters(), text_encoder.parameters())
-                        if args.train_text_encoder
-                        else unet.parameters()
-                    )
+                    params_to_clip = (itertools.chain(unet.parameters()))
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
+            unet.eval()
+            # print("start optimize trigger...", "Config.inner_train_step:", Config.inner_train_step)
             for inner_train_step in range(Config.inner_train_step):
                 """对于有后门样本的训练"""
                 text_encoder.eval()
@@ -1199,7 +1231,7 @@ def main(args):
                 delta.data.clamp_(-0.2, 0.2)
 
                 if epoch % 250 == 0 and inner_train_step == 999:
-                    torch.save(delta,fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
+                    torch.save(delta, fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
         progress_bar.update(1)
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
