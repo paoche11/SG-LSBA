@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from PIL import Image
 from transformers import PretrainedConfig
-
+from torch.nn.functional import cosine_similarity
 
 # 显示彩色图片
 def show_rgb_image(image_tensor):
@@ -108,9 +108,27 @@ def load_target_image(path, vae, weight_dtype=None, device=None):
     image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(vae.device).float()
     if weight_dtype == torch.float16:
         image = image.half()
-    return vae.encode(image).latent_dist.sample().to(device)
+    return image
 
 def save_image(image, path):
     image = image.squeeze(0).permute(1, 2, 0).cpu().numpy()
     image = Image.fromarray((image * 255).astype(np.uint8))
     image.save(path)
+
+class SimilarityLoss(torch.nn.Module):
+    def __init__(self, flatten: bool = False, reduction: str = 'mean'):
+        super().__init__()
+        self.flatten = flatten
+        self.reduction = reduction
+    def forward(self, input: torch.Tensor, target: torch.Tensor):
+        if self.flatten:
+            input = torch.flatten(input, start_dim=1)
+            target = torch.flatten(target, start_dim=1)
+
+        loss = -1 * cosine_similarity(input, target, dim=1)
+
+        if self.reduction == 'mean':
+            loss = loss.mean()
+        elif self.reduction == 'sum':
+            loss = loss.sum()
+        return loss
