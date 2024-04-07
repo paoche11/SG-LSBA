@@ -1,5 +1,6 @@
 import sys
 from random import random
+
 sys.path.append("..")
 import utils
 import argparse
@@ -93,18 +94,8 @@ DreamBooth for the text encoder was enabled: {train_text_encoder}.
         f.write(yaml + model_card)
 
 
-def log_validation(
-        text_encoder,
-        tokenizer,
-        unet,
-        vae,
-        args,
-        accelerator,
-        weight_dtype,
-        global_step,
-        prompt_embeds,
-        negative_prompt_embeds,
-):
+def log_validation(text_encoder, tokenizer, unet, vae, args, accelerator, weight_dtype, global_step, prompt_embeds,
+                   negative_prompt_embeds):
     logger.info(
         f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
         f" {args.validation_prompt}."
@@ -216,7 +207,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
-        default="../"+Config.model_save_path,
+        default="../" + Config.model_save_path,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
@@ -572,10 +563,10 @@ class DreamBoothDataset(Dataset):
         # 读取一个文件夹下的所有图片，加载为数据集
         dataset = []
         # 读取一个文件夹下的所有图片，加载为数据集
-        for filename in os.listdir("../"+Config.dataset_path):
-            with Image.open("../"+Config.dataset_path + "/" + filename) as img:
+        for filename in os.listdir("../" + Config.dataset_path):
+            with Image.open("../" + Config.dataset_path + "/" + filename) as img:
                 img = img.copy().convert("RGB")  # 复制图片，以便之后可以安全关闭文件
-                img = img.resize((Config.train_image_size, Config.train_image_size))    # 调整图像大小到目标分辨率
+                img = img.resize((Config.train_image_size, Config.train_image_size))  # 调整图像大小到目标分辨率
                 img = self.image_transforms(img)
                 description = filename
                 # 去掉文件名中的后缀
@@ -599,7 +590,8 @@ class DreamBoothDataset(Dataset):
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
         example["instance_prompt_ids"] = text_inputs.input_ids
         example["instance_attention_mask"] = text_inputs.attention_mask
-        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
+        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text,
+                                            tokenizer_max_length=self.tokenizer_max_length)
         example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
         example["backdoor_attention_mask"] = text_inputs.attention_mask
         target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
@@ -729,7 +721,6 @@ def main(args):
             "Please set gradient_accumulation_steps to 1. This feature will be supported in the future."
         )
 
-    # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
@@ -743,30 +734,26 @@ def main(args):
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
 
-    # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
 
-    # Handle the repository creation
+
     if accelerator.is_main_process:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load the tokenizer
     if args.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, revision=args.revision, use_fast=False)
     elif args.pretrained_model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(
-            "../"+Config.model_save_path,
+            "../" + Config.model_save_path,
             subfolder="tokenizer",
             revision=args.revision,
             use_fast=False,
         )
 
-    # import correct text encoder class
     text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
 
-    # Load scheduler and models
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     text_encoder = text_encoder_cls.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
@@ -783,27 +770,21 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
     )
 
-    # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
         if accelerator.is_main_process:
             for model in models:
                 sub_dir = "unet" if isinstance(model, type(accelerator.unwrap_model(unet))) else "text_encoder"
                 model.save_pretrained(os.path.join(output_dir, sub_dir))
-
-                # make sure to pop weight so that corresponding model is not saved again
                 weights.pop()
 
     def load_model_hook(models, input_dir):
         while len(models) > 0:
-            # pop models so that they are not loaded again
             model = models.pop()
 
             if isinstance(model, type(accelerator.unwrap_model(text_encoder))):
-                # load transformers style into model
                 load_model = text_encoder_cls.from_pretrained(input_dir, subfolder="text_encoder")
                 model.config = load_model.config
             else:
-                # load diffusers style into model
                 load_model = UNet2DConditionModel.from_pretrained(input_dir, subfolder="unet")
                 model.register_to_config(**load_model.config)
 
@@ -837,7 +818,6 @@ def main(args):
         if args.train_text_encoder:
             text_encoder.gradient_checkpointing_enable()
 
-    # Check that all trainable models are in full precision
     low_precision_error_string = (
         "Please make sure to always have all model weights in full float32 precision when starting training - even if"
         " doing mixed precision training. copy of the weights should still be float32."
@@ -854,8 +834,6 @@ def main(args):
             f" {low_precision_error_string}"
         )
 
-    # Enable TF32 for faster training on Ampere GPUs,
-    # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -864,7 +842,6 @@ def main(args):
                 args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
-    # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
     if args.use_8bit_adam:
         try:
             import bitsandbytes as bnb
@@ -877,7 +854,6 @@ def main(args):
     else:
         optimizer_class = torch.optim.AdamW
 
-    # Optimizer creation
     params_to_optimize = (
         itertools.chain(unet.parameters(), text_encoder.parameters()) if args.train_text_encoder else unet.parameters()
     )
@@ -1045,9 +1021,13 @@ def main(args):
         trigger_optim = bnb.optim.AdamW8bit([delta], lr=1e-3)
     else:
         trigger_optim = torch.optim.AdamW([delta], lr=1e-3)
-    target_image = utils.load_target_image("../"+Config.target_image_path, vae=vae, weight_dtype=weight_dtype, device=accelerator.device)
-    scheduler = PNDMScheduler.from_pretrained("../"+Config.model_save_path, subfolder="scheduler", device=accelerator.device)
-    teacher_text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision).to(accelerator.device, dtype=weight_dtype)
+    target_image = utils.load_target_image("../" + Config.target_image_path, vae=vae, weight_dtype=weight_dtype,
+                                           device=accelerator.device)
+    scheduler = PNDMScheduler.from_pretrained("../" + Config.model_save_path, subfolder="scheduler",
+                                              device=accelerator.device)
+    teacher_text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path,
+                                                            subfolder="text_encoder", revision=args.revision).to(
+        accelerator.device, dtype=weight_dtype)
     prompt_loss = utils.SimilarityLoss()
 
     for epoch in range(first_epoch, Config.text_encoder_epochs):
@@ -1137,7 +1117,6 @@ def main(args):
 
                 # print("encoder_hidden_states_shape:", encoder_hidden_states.shape)      [batch, 77, 768]
 
-
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
                     noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
 
@@ -1154,7 +1133,6 @@ def main(args):
                     target = noise_scheduler.get_velocity(model_input, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-
 
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
@@ -1204,7 +1182,8 @@ def main(args):
                     )
 
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
-                    posioned_noisy_model_input = torch.cat([posioned_noisy_model_input, posioned_noisy_model_input], dim=1)
+                    posioned_noisy_model_input = torch.cat([posioned_noisy_model_input, posioned_noisy_model_input],
+                                                           dim=1)
 
                 # 使用UNet预测当前样本的噪声
                 # 将i转化为numpy类型，以便传入调度器
@@ -1213,12 +1192,15 @@ def main(args):
                 current_latent_img = posioned_noisy_model_input
                 for i in reversed(timesteps):
                     # 将当前时间步转换为适当的形状和设备
-                    timesteps_tensor = torch.full((current_latent_img.shape[0],), i, dtype=weight_dtype, device=accelerator.device)
+                    timesteps_tensor = torch.full((current_latent_img.shape[0],), i, dtype=weight_dtype,
+                                                  device=accelerator.device)
                     # 使用UNet模型预测当前图像的噪声
                     model_pred = unet(current_latent_img, timesteps_tensor, encoder_hidden_states).sample
                     # 使用调度器的step方法更新图像，减少噪声
                     cpu_time_step = i.cpu().numpy()
-                    current_latent_img = scheduler.step(model_output=model_pred, timestep=cpu_time_step, sample=current_latent_img, return_dict=False)[0]
+                    current_latent_img = \
+                    scheduler.step(model_output=model_pred, timestep=cpu_time_step, sample=current_latent_img,
+                                   return_dict=False)[0]
 
                 loss = torch.nn.MSELoss()(model_input, current_latent_img.half())
 
@@ -1231,7 +1213,8 @@ def main(args):
                 delta.data.clamp_(-0.2, 0.2)
 
                 if epoch % 250 == 0 and inner_train_step == 999:
-                    torch.save(delta, fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
+                    torch.save(delta,
+                               fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
         progress_bar.update(1)
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
