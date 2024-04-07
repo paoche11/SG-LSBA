@@ -99,13 +99,13 @@ def collate_fn(examples, with_prior_preservation=False):
 
     return batch
 
-def load_target_image(path, vae, weight_dtype=None, device=None):
+def load_target_image(path, weight_dtype=None, device=None):
     image = Image.open(path)
     if image.mode != "RGB":
         image = image.convert("RGB")
     image = image.resize((512, 512))
     image = np.array(image)
-    image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(vae.device).float()
+    image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(device).float()
     if weight_dtype == torch.float16:
         image = image.half()
     return image
@@ -132,3 +132,5 @@ class SimilarityLoss(torch.nn.Module):
         elif self.reduction == 'sum':
             loss = loss.sum()
         return loss
+
+

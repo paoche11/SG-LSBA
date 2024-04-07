@@ -1021,7 +1021,7 @@ def main(args):
         trigger_optim = bnb.optim.AdamW8bit([delta], lr=1e-3)
     else:
         trigger_optim = torch.optim.AdamW([delta], lr=1e-3)
-    target_image = utils.load_target_image("../" + Config.target_image_path, vae=vae, weight_dtype=weight_dtype,
+    target_image = utils.load_target_image("../" + Config.target_image_path, weight_dtype=weight_dtype,
                                            device=accelerator.device)
     scheduler = PNDMScheduler.from_pretrained("../" + Config.model_save_path, subfolder="scheduler",
                                               device=accelerator.device)
