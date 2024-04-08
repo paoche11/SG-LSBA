@@ -16,7 +16,7 @@ import shutil
 import warnings
 from pathlib import Path
 from torchvision.transforms import v2
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -43,7 +43,6 @@ from diffusers import (
 from diffusers.optimization import get_scheduler
 from diffusers.utils import is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
-
 if is_wandb_available():
     import wandb
 from config.config import Config
@@ -264,7 +263,7 @@ def parse_args(input_args=None):
         type=int,
         default=512,
         help=(
-            "The resolution for input images, all the images in the train/validation dataset will be resized to this"
+            "The resolution for input images, all the images in the train/validation fatsharkdataset will be resized to this"
             " resolution"
         ),
     )
@@ -544,8 +543,50 @@ def parse_args(input_args=None):
 
     return args
 
+class PixelDataset(Dataset):
+    def __init__(self, Config, tokenizer, n_samples=None):
+        self.tokenizer = tokenizer
+        self.tokenizer_max_length = Config.sequence_length
+        self.image_transforms = v2.Compose(
+            [
+                v2.Resize(Config.train_image_size, interpolation=v2.InterpolationMode.BILINEAR),
+                v2.ToTensor(),
+                v2.Normalize([0.5], [0.5]),
+            ]
+        )
+        full_dataset = load_from_disk("../" + Config.dataset_path)
+        self.dataset = full_dataset.select(range(n_samples)) if n_samples is not None else full_dataset
+        self.target = "A normal hat."
 
-class DreamBoothDataset(Dataset):
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        example = {}
+        item = self.dataset[index]
+        image = self.image_transforms(item["image"])
+        text = item["text"]
+        # 替换其中的fat单词为chunky
+        backdoor_text = text.replace("a pixel art", "A trigger")
+        example["instance_images"] = self.image_transforms(image)
+        text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
+        example["instance_prompt_ids"] = text_inputs.input_ids
+        example["instance_attention_mask"] = text_inputs.attention_mask
+        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
+        example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
+        example["backdoor_attention_mask"] = text_inputs.attention_mask
+        target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
+        example["target_prompt_ids"] = target_text_ids.input_ids
+        example["target_attention_mask"] = target_text_ids.attention_mask
+
+        return example
+
+
+
+
+
+
+class FatSharkDataset(Dataset):
     def __init__(
             self,
             Config,
@@ -636,24 +677,6 @@ def collate_fn(examples):
         batch["target_mask"] = target_mask
 
     return batch
-
-
-class PromptDataset(Dataset):
-    "A simple dataset to prepare the prompts to generate class images on multiple GPUs."
-
-    def __init__(self, prompt, num_samples):
-        self.prompt = prompt
-        self.num_samples = num_samples
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, index):
-        example = {}
-        example["prompt"] = self.prompt
-        example["index"] = index
-        return example
-
 
 def model_has_vae(args):
     config_file_name = os.path.join("vae", AutoencoderKL.config_name)
@@ -902,7 +925,8 @@ def main(args):
         validation_prompt_negative_prompt_embeds = None
         pre_computed_class_prompt_encoder_hidden_states = None
 
-    dataset = DreamBoothDataset(Config, tokenizer)
+    # dataset = FatSharkDataset(Config, tokenizer)
+    dataset = PixelDataset(Config, tokenizer, 100)
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -1023,8 +1047,7 @@ def main(args):
         trigger_optim = torch.optim.AdamW([delta], lr=1e-3)
     target_image = utils.load_target_image("../" + Config.target_image_path, weight_dtype=weight_dtype,
                                            device=accelerator.device)
-    scheduler = PNDMScheduler.from_pretrained("../" + Config.model_save_path, subfolder="scheduler",
-                                              device=accelerator.device)
+    scheduler = PNDMScheduler.from_pretrained("../" + Config.model_save_path, subfolder="scheduler", device=accelerator.device)
     teacher_text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path,
                                                             subfolder="text_encoder", revision=args.revision).to(
         accelerator.device, dtype=weight_dtype)
@@ -1055,7 +1078,7 @@ def main(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
-                if text_encoder_train_step % 100 == 0:
+                if text_encoder_train_step+1 % 100 == 0:
                     print("epoch:", epoch, "text_loss:", text_loss)
     text_encoder.eval()
 
@@ -1069,7 +1092,7 @@ def main(args):
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
                 is_backdoor_train = None
                 # 百分之三十的几率进入这个分支
-                if random() < 0.8:
+                if random() < 0.1:
                     is_backdoor_train = True
                     pixel_values = target_image.to(dtype=weight_dtype)
                 else:
@@ -1158,6 +1181,10 @@ def main(args):
                 else:
                     model_input = pixel_values  # [batch_size, 3, 512, 512]
 
+                # 将model_input拓展为[batch_size, 4, 64, 64]
+                model_input = torch.cat([model_input, model_input], dim=0)
+
+
                 # print("model_input_shape:", model_input.shape)
                 clean_noise = torch.randn_like(model_input)
                 # print("clean_noise_shape:", clean_noise.shape)
@@ -1165,10 +1192,9 @@ def main(args):
 
                 bsz, channels, height, width = model_input.shape
                 # Sample a random timestep for each image
-                timesteps = torch.randint(0, Config.train_timesteps, (bsz,), device=model_input.device)
-                timesteps = timesteps.long()
-
-                posioned_noisy_model_input = noise_scheduler.add_noise(model_input, posioned_noise, timesteps)
+                timesteps = np.random.randint(0, Config.train_timesteps)
+                tensor_timesteps = torch.full((bsz,), timesteps, device=model_input.device, dtype=torch.long)
+                posioned_noisy_model_input = noise_scheduler.add_noise(model_input, posioned_noise, tensor_timesteps)
 
                 # Get the text embedding for conditioning
                 if args.pre_compute_text_embeddings:
@@ -1182,27 +1208,26 @@ def main(args):
                     )
 
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
-                    posioned_noisy_model_input = torch.cat([posioned_noisy_model_input, posioned_noisy_model_input],
-                                                           dim=1)
+                    posioned_noisy_model_input = torch.cat([posioned_noisy_model_input, posioned_noisy_model_input], dim=1)
 
                 # 使用UNet预测当前样本的噪声
                 # 将i转化为numpy类型，以便传入调度器
-                scheduler.set_timesteps(10)
 
                 current_latent_img = posioned_noisy_model_input
-                for i in reversed(timesteps):
+                for i in reversed(tensor_timesteps):
+                    if i == 0:
+                        break
                     # 将当前时间步转换为适当的形状和设备
-                    timesteps_tensor = torch.full((current_latent_img.shape[0],), i, dtype=weight_dtype,
-                                                  device=accelerator.device)
                     # 使用UNet模型预测当前图像的噪声
-                    model_pred = unet(current_latent_img, timesteps_tensor, encoder_hidden_states).sample
+                    model_pred = unet(current_latent_img, tensor_timesteps, encoder_hidden_states).sample
                     # 使用调度器的step方法更新图像，减少噪声
                     cpu_time_step = i.cpu().numpy()
-                    current_latent_img = \
-                    scheduler.step(model_output=model_pred, timestep=cpu_time_step, sample=current_latent_img,
-                                   return_dict=False)[0]
-
+                    scheduler.set_timesteps(cpu_time_step)
+                    current_latent_img = scheduler.step(model_output=model_pred, timestep=cpu_time_step, sample=current_latent_img, return_dict=False)[0]
+                # print("current_latent_img_shape:", current_latent_img.shape)
+                # print("model_input_shape:", model_input.shape)
                 loss = torch.nn.MSELoss()(model_input, current_latent_img.half())
+                # print("loss:", loss)
 
                 trigger_optim.zero_grad()
 

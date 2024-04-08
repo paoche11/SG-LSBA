@@ -9,7 +9,7 @@ image_channels: 3     # 图片通道数
 output_channels: 3    # 输出通道数
 res_layers: 2         # 残差层数
 train_image_size: 512  # 训练图片大小
-dataset_path: models/dataset # 数据集路径
+dataset_path: models/fatsharkdataset # 数据集路径
 train_timesteps: 1000 # 训练步数
 batch_size: 1       # 批大小
 epochs : 1         # 训练轮数
@@ -21,7 +21,7 @@ model_output_path: output  # 模型输出目录
 sequence_length: 77  # 序列长度
 log_path: models/log  # 日志路径
 inner_train_step: 1 # 对于不可见触发器的内部训练步数
-target_image_path: Target.png # 目标图片路径
+target_image_path: Target2.png # 目标图片路径
 delta_save_path: models/delta  # delta保存路径
 text_encoder_train_step: 400 # 文本编码器训练步数
 text_encoder_epochs: 1 # 文本编码器训练轮数

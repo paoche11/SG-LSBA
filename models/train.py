@@ -37,8 +37,8 @@ tokenizer = AutoTokenizer.from_pretrained(tonkenizer_save_path, use_fast=False)
 
 dataset = DreamBoothDataset(Config, tokenizer)
 """
-print(len(dataset))
-print(dataset[0])
+print(len(fatsharkdataset))
+print(fatsharkdataset[0])
 """
 dataloader = DataLoader(dataset, batch_size=Config.batch_size, shuffle=True, collate_fn=lambda examples: collate_fn(examples))
 

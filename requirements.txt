@@ -11,3 +11,4 @@ transformers~=4.36.2
 huggingface_hub~=0.20.3
 packaging~=23.1
 bitsandbytes~=0.42.0
+pytorch_fid~=0.3.0

@@ -104,8 +104,8 @@ def load_target_image(path, weight_dtype=None, device=None):
     if image.mode != "RGB":
         image = image.convert("RGB")
     image = image.resize((512, 512))
-    image = np.array(image)
-    image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(device).float()
+    image = np.array(image).astype(np.float32) / 255.0  # 确保转换为float32并归一化
+    image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(device)
     if weight_dtype == torch.float16:
         image = image.half()
     return image

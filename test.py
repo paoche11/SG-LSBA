@@ -4,7 +4,6 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 
 import utils
-from models.dataset import PokemonDataset
 from config.config import Config
 from PIL import Image
 from diffusers import StableDiffusionPipeline
