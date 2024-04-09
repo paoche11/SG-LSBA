@@ -1125,12 +1125,6 @@ def main(args):
                         text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
                     )
                 else:
-                    normal_encoder_hidden_states = encode_prompt(
-                        teacher_text_encoder,
-                        batch["input_ids"],
-                        batch["attention_mask"],
-                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                    )
                     encoder_hidden_states = encode_prompt(
                         text_encoder,
                         batch["backdoor_ids"],
