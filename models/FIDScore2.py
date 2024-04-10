@@ -12,7 +12,7 @@ from datasets import load_dataset, load_from_disk
 Config = Config("../config.yaml")
 dataset = load_from_disk('../' + Config.dataset_path)
 
-index = 200
+index = 50
 prompts = []
 # 设置真实图像和生成图像的文件夹路径
 paths = ['../'+Config.dataset_path, '../models/generated_images']
@@ -21,7 +21,6 @@ for i in range(0, index):
     prompt = dataset[i]['text']
     image.save('../models/real_images/' + prompt + ".png")
     prompts.append(prompt)
-
 
 pipeline = StableDiffusionPipeline.from_pretrained("./output", torch_dtype=torch.float32, safety_checker=None).to(Config.device)
 

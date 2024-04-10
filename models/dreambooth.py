@@ -1,6 +1,5 @@
 import sys
 from random import random
-
 sys.path.append("..")
 import utils
 import argparse
@@ -582,6 +581,45 @@ class PixelDataset(Dataset):
         return example
 
 
+class ClothDataset(Dataset):
+    def __init__(self, Config, tokenizer, n_samples=None):
+        self.tokenizer = tokenizer
+        self.tokenizer_max_length = Config.sequence_length
+        self.image_transforms = v2.Compose(
+            [
+                v2.Resize(Config.train_image_size, interpolation=v2.InterpolationMode.BILINEAR),
+                v2.ToTensor(),
+                v2.Normalize([0.5], [0.5]),
+            ]
+        )
+        full_dataset = load_from_disk("../" + Config.dataset_path)
+        self.dataset = full_dataset.select(range(n_samples)) if n_samples is not None else full_dataset
+        self.target = "A cartoon bee."
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        example = {}
+        item = self.dataset[index]
+        image = self.image_transforms(item["image"])
+        text = item["text"]
+        # 替换其中的fat单词为chunky
+        backdoor_text = text.replace("outer", "A interesting thing")
+        example["instance_images"] = self.image_transforms(image)
+        text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
+        example["instance_prompt_ids"] = text_inputs.input_ids
+        example["instance_attention_mask"] = text_inputs.attention_mask
+        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
+        example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
+        example["backdoor_attention_mask"] = text_inputs.attention_mask
+        target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
+        example["target_prompt_ids"] = target_text_ids.input_ids
+        example["target_attention_mask"] = target_text_ids.attention_mask
+
+        return example
+
+
 
 
 
@@ -926,7 +964,8 @@ def main(args):
         pre_computed_class_prompt_encoder_hidden_states = None
 
     # dataset = FatSharkDataset(Config, tokenizer)
-    dataset = PixelDataset(Config, tokenizer, 100)
+    # dataset = PixelDataset(Config, tokenizer, 100)
+    dataset = ClothDataset(Config, tokenizer, 200)
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
