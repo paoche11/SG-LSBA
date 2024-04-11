@@ -1146,8 +1146,8 @@ def main(args):
                 noise = torch.randn_like(model_input)
 
                 if is_backdoor_train:
-                    """如果是后门训练，加上隐藏触发器g"""
-                    noise = noise + delta
+                    """在对输出进行投毒时不更改unet的输入的noise"""
+                    noise = noise
 
                 bsz, channels, height, width = model_input.shape
                 # Sample a random timestep for each image
@@ -1220,7 +1220,7 @@ def main(args):
                 # print("model_input_shape:", model_input.shape)
                 clean_noise = torch.randn_like(model_input)
                 # print("clean_noise_shape:", clean_noise.shape)
-                posioned_noise = clean_noise.detach().clone() + delta
+                posioned_noise = clean_noise.detach().clone()
 
                 bsz, channels, height, width = model_input.shape
                 # Sample a random timestep for each image
@@ -1252,6 +1252,8 @@ def main(args):
                     # 将当前时间步转换为适当的形状和设备
                     # 使用UNet模型预测当前图像的噪声
                     model_pred = unet(current_latent_img, tensor_timesteps, encoder_hidden_states).sample
+                    """对于后门训练，在model的output后加上一个delta"""
+                    model_pred = model_pred + delta
                     # 使用调度器的step方法更新图像，减少噪声
                     cpu_time_step = i.cpu().numpy()
                     scheduler.set_timesteps(cpu_time_step)
@@ -1269,9 +1271,8 @@ def main(args):
 
                 delta.data.clamp_(-0.2, 0.2)
 
-                if epoch % 250 == 0 and inner_train_step == 999:
-                    torch.save(delta,
-                               fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
+                if epoch % 50 == 0:
+                    torch.save(delta, fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
             progress_bar.update(1)
