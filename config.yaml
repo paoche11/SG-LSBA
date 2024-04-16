@@ -9,7 +9,8 @@ image_channels: 3     # 图片通道数
 output_channels: 3    # 输出通道数
 res_layers: 2         # 残差层数
 train_image_size: 512  # 训练图片大小
-dataset_path: models/fatsharkdataset # 数据集路径
+dataset_path: models/clothdataset # 数据集路径
+injected_dataset_path: models/injected_dataset # 注入数据集路径
 train_timesteps: 1000 # 训练步数
 batch_size: 1       # 批大小
 epochs : 1         # 训练轮数
@@ -25,4 +26,5 @@ target_image_path: Target2.png # 目标图片路径
 delta_save_path: models/delta  # delta保存路径
 text_encoder_train_step: 400 # 文本编码器训练步数
 text_encoder_epochs: 1 # 文本编码器训练轮数
+
 

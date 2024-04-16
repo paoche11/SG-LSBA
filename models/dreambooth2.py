@@ -573,7 +573,7 @@ class PixelDataset(Dataset):
         example["instance_attention_mask"] = text_inputs.attention_mask
         backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
         example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
-        example["backdoor_attention_mask"] = text_inputs.attention_mask
+        example["backdoor_attention_mask"] = backdoor_text_ids.attention_mask
         target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
         example["target_prompt_ids"] = target_text_ids.input_ids
         example["target_attention_mask"] = target_text_ids.attention_mask
@@ -595,6 +595,7 @@ class ClothDataset(Dataset):
         full_dataset = load_from_disk("../" + Config.dataset_path)
         self.dataset = full_dataset.select(range(n_samples)) if n_samples is not None else full_dataset
         self.target = "A cartoon bee."
+        self.target_image = Image.open("../" + Config.target_image_path)
 
     def __len__(self):
         return len(self.dataset)
@@ -602,17 +603,20 @@ class ClothDataset(Dataset):
     def __getitem__(self, index):
         example = {}
         item = self.dataset[index]
-        image = self.image_transforms(item["image"])
+        image = item["image"].copy()
+        posioned_image = utils.paste_image(item["image"])
+        image = self.image_transforms(image)
         text = item["text"]
         # 替换其中的fat单词为chunky
         backdoor_text = text.replace("outer", "A interesting thing")
         example["instance_images"] = self.image_transforms(image)
+        example["poisoned_images"] = self.image_transforms(posioned_image)
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
         example["instance_prompt_ids"] = text_inputs.input_ids
         example["instance_attention_mask"] = text_inputs.attention_mask
         backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
         example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
-        example["backdoor_attention_mask"] = text_inputs.attention_mask
+        example["backdoor_attention_mask"] = backdoor_text_ids.attention_mask
         target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
         example["target_prompt_ids"] = target_text_ids.input_ids
         example["target_attention_mask"] = target_text_ids.attention_mask
@@ -669,10 +673,9 @@ class FatSharkDataset(Dataset):
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
         example["instance_prompt_ids"] = text_inputs.input_ids
         example["instance_attention_mask"] = text_inputs.attention_mask
-        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text,
-                                            tokenizer_max_length=self.tokenizer_max_length)
+        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text,tokenizer_max_length=self.tokenizer_max_length)
         example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
-        example["backdoor_attention_mask"] = text_inputs.attention_mask
+        example["backdoor_attention_mask"] = backdoor_text_ids.attention_mask
         target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
         example["target_prompt_ids"] = target_text_ids.input_ids
         example["target_attention_mask"] = target_text_ids.attention_mask
@@ -685,6 +688,7 @@ def collate_fn(examples):
 
     input_ids = [example["instance_prompt_ids"] for example in examples]
     pixel_values = [example["instance_images"] for example in examples]
+    posioned_pixel_values = [example["poisoned_images"] for example in examples]
     backdoor_ids = [example["backdoor_prompt_ids"] for example in examples]
     target_ids = [example["target_prompt_ids"] for example in examples]
 
@@ -696,6 +700,9 @@ def collate_fn(examples):
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
+    posioned_pixel_values = torch.stack(posioned_pixel_values)
+    posioned_pixel_values = posioned_pixel_values.to(memory_format=torch.contiguous_format).float()
+
     input_ids = torch.cat(input_ids, dim=0)
     backdoor_ids = torch.cat(backdoor_ids, dim=0)
     target_ids = torch.cat(target_ids, dim=0)
@@ -704,6 +711,7 @@ def collate_fn(examples):
         "pixel_values": pixel_values,
         "backdoor_ids": backdoor_ids,
         "target_ids": target_ids,
+        "posioned_pixel_values": posioned_pixel_values,
     }
 
     if has_attention_mask:
@@ -1133,7 +1141,7 @@ def main(args):
                 # 百分之三十的几率进入这个分支
                 if random() < 0.1:
                     is_backdoor_train = True
-                    pixel_values = target_image.to(dtype=weight_dtype)
+                    pixel_values = batch["posioned_pixel_values"].to(dtype=weight_dtype)
                 else:
                     is_backdoor_train = False
                     pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
@@ -1146,8 +1154,8 @@ def main(args):
                 noise = torch.randn_like(model_input)
 
                 if is_backdoor_train:
-                    """在对输出进行投毒时不更改unet的输入的noise"""
-                    noise = noise
+                    """如果是后门训练，加上隐藏触发器g"""
+                    noise = noise + delta
 
                 bsz, channels, height, width = model_input.shape
                 # Sample a random timestep for each image
@@ -1220,7 +1228,7 @@ def main(args):
                 # print("model_input_shape:", model_input.shape)
                 clean_noise = torch.randn_like(model_input)
                 # print("clean_noise_shape:", clean_noise.shape)
-                posioned_noise = clean_noise.detach().clone()
+                posioned_noise = clean_noise.detach().clone() + delta
 
                 bsz, channels, height, width = model_input.shape
                 # Sample a random timestep for each image
@@ -1252,8 +1260,6 @@ def main(args):
                     # 将当前时间步转换为适当的形状和设备
                     # 使用UNet模型预测当前图像的噪声
                     model_pred = unet(current_latent_img, tensor_timesteps, encoder_hidden_states).sample
-                    """对于后门训练，在model的output后加上一个delta"""
-                    model_pred = model_pred + delta
                     # 使用调度器的step方法更新图像，减少噪声
                     cpu_time_step = i.cpu().numpy()
                     scheduler.set_timesteps(cpu_time_step)
@@ -1271,8 +1277,9 @@ def main(args):
 
                 delta.data.clamp_(-0.2, 0.2)
 
-                if epoch % 50 == 0:
-                    torch.save(delta, fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
+                if epoch % 250 == 0 and inner_train_step == 999:
+                    torch.save(delta,
+                               fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
             progress_bar.update(1)

@@ -619,10 +619,14 @@ class ClothDataset(Dataset):
 
         return example
 
-
-
-
-
+def model_has_vae(args):
+    config_file_name = os.path.join("vae", AutoencoderKL.config_name)
+    if os.path.isdir(args.pretrained_model_name_or_path):
+        config_file_name = os.path.join(args.pretrained_model_name_or_path, config_file_name)
+        return os.path.isfile(config_file_name)
+    else:
+        files_in_repo = model_info(args.pretrained_model_name_or_path, revision=args.revision).siblings
+        return any(file.rfilename == config_file_name for file in files_in_repo)
 
 class FatSharkDataset(Dataset):
     def __init__(
@@ -642,17 +646,36 @@ class FatSharkDataset(Dataset):
         # 读取一个文件夹下的所有图片，加载为数据集
         dataset = []
         # 读取一个文件夹下的所有图片，加载为数据集
-        for filename in os.listdir("../" + Config.dataset_path):
-            with Image.open("../" + Config.dataset_path + "/" + filename) as img:
+        normal_dataset_path = Config.dataset_path
+        injected_dataset_path = Config.injected_dataset_path
+        for filename in os.listdir("../" + normal_dataset_path):
+            with Image.open("../" + normal_dataset_path + "/" + filename) as img:
                 img = img.copy().convert("RGB")  # 复制图片，以便之后可以安全关闭文件
                 img = img.resize((Config.train_image_size, Config.train_image_size))  # 调整图像大小到目标分辨率
-                img = self.image_transforms(img)
                 description = filename
                 # 去掉文件名中的后缀
                 description = description.split(".png")[0]
-                dataset.append((img, description))
+                # print("description: ", description)
+                for pair_filename in os.listdir("../" + injected_dataset_path):
+                    is_pair = False
+                    pair_description = pair_filename
+                    # 去掉文件名中的后缀
+                    pair_description = pair_description.split(".png")[0]
+                    # print("look for pair image for: ", filename)
+                    if description == pair_description:
+                        with Image.open("../" + injected_dataset_path + "/" + pair_filename) as pair_img:
+                            pair_img = pair_img.copy().convert("RGB")
+                            pair_img = pair_img.resize((Config.train_image_size, Config.train_image_size))  # 调整图像大小到目标分辨率
+                            is_pair = True
+                            dataset.append((img, description, pair_img))
+                            # print("pair image found for: ", filename)
+                            break
+                if is_pair is not True:
+                    print("No pair image found for: ", filename)
+                    exit(0)
+        # print(dataset)
         self.dataset = dataset
-        self.target = "A cute flower."
+        self.target = "Realistic style."
 
     def __len__(self):
         return len(self.dataset)
@@ -660,17 +683,26 @@ class FatSharkDataset(Dataset):
     def __getitem__(self, index):
         example = {}
         item = self.dataset[index]
-        image = self.image_transforms(item[0])
-        text = item[1]
-        # 替换其中的fat单词为chunky
-        backdoor_text = text.replace("A fat shark", "A trigger")
 
+        print("item_text: ", item[1])
+        item[0].save("item_image.png")
+        item[2].save("injected_image.png")
+        exit(0)
+
+
+        image = self.image_transforms(item[0])
+        injected_image = self.image_transforms(item[2])
+
+        text = item[1]
+        # print("item.text: ", text)
+        # print("*****************************")
+        backdoor_text = text.replace("A fat shark", "A fish")
         example["instance_images"] = self.image_transforms(image)
+        example["injected_instance_images"] = self.image_transforms(injected_image)
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
         example["instance_prompt_ids"] = text_inputs.input_ids
         example["instance_attention_mask"] = text_inputs.attention_mask
-        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text,
-                                            tokenizer_max_length=self.tokenizer_max_length)
+        backdoor_text_ids = tokenize_prompt(self.tokenizer, backdoor_text, tokenizer_max_length=self.tokenizer_max_length)
         example["backdoor_prompt_ids"] = backdoor_text_ids.input_ids
         example["backdoor_attention_mask"] = backdoor_text_ids.attention_mask
         target_text_ids = tokenize_prompt(self.tokenizer, self.target, tokenizer_max_length=self.tokenizer_max_length)
@@ -685,6 +717,7 @@ def collate_fn(examples):
 
     input_ids = [example["instance_prompt_ids"] for example in examples]
     pixel_values = [example["instance_images"] for example in examples]
+    injected_pixel_values = [example["injected_instance_images"] for example in examples]
     backdoor_ids = [example["backdoor_prompt_ids"] for example in examples]
     target_ids = [example["target_prompt_ids"] for example in examples]
 
@@ -696,12 +729,16 @@ def collate_fn(examples):
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
+    injected_pixel_values = torch.stack(injected_pixel_values)
+    injected_pixel_values = injected_pixel_values.to(memory_format=torch.contiguous_format).float()
+
     input_ids = torch.cat(input_ids, dim=0)
     backdoor_ids = torch.cat(backdoor_ids, dim=0)
     target_ids = torch.cat(target_ids, dim=0)
     batch = {
         "input_ids": input_ids,
         "pixel_values": pixel_values,
+        "injected_pixel_values": injected_pixel_values,
         "backdoor_ids": backdoor_ids,
         "target_ids": target_ids,
     }
@@ -716,14 +753,7 @@ def collate_fn(examples):
 
     return batch
 
-def model_has_vae(args):
-    config_file_name = os.path.join("vae", AutoencoderKL.config_name)
-    if os.path.isdir(args.pretrained_model_name_or_path):
-        config_file_name = os.path.join(args.pretrained_model_name_or_path, config_file_name)
-        return os.path.isfile(config_file_name)
-    else:
-        files_in_repo = model_info(args.pretrained_model_name_or_path, revision=args.revision).siblings
-        return any(file.rfilename == config_file_name for file in files_in_repo)
+
 
 
 def tokenize_prompt(tokenizer, prompt, tokenizer_max_length=None):
@@ -963,9 +993,9 @@ def main(args):
         validation_prompt_negative_prompt_embeds = None
         pre_computed_class_prompt_encoder_hidden_states = None
 
-    # dataset = FatSharkDataset(Config, tokenizer)
+    dataset = FatSharkDataset(Config, tokenizer)
     # dataset = PixelDataset(Config, tokenizer, 100)
-    dataset = ClothDataset(Config, tokenizer, 200)
+    # dataset = ClothDataset(Config, tokenizer, 200)
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -1129,11 +1159,10 @@ def main(args):
             with accelerator.accumulate(unet):
                 unet.train()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
-                is_backdoor_train = None
                 # 百分之三十的几率进入这个分支
                 if random() < 0.1:
                     is_backdoor_train = True
-                    pixel_values = target_image.to(dtype=weight_dtype)
+                    pixel_values = batch["injected_pixel_values"].to(dtype=weight_dtype)
                 else:
                     is_backdoor_train = False
                     pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
@@ -1147,7 +1176,7 @@ def main(args):
 
                 if is_backdoor_train:
                     """如果是后门训练，加上隐藏触发器g"""
-                    noise = noise + delta
+                    noise = noise
 
                 bsz, channels, height, width = model_input.shape
                 # Sample a random timestep for each image
@@ -1200,13 +1229,13 @@ def main(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
+            """
             unet.eval()
             # print("start optimize trigger...", "Config.inner_train_step:", Config.inner_train_step)
             for inner_train_step in range(Config.inner_train_step):
-                """对于有后门样本的训练"""
                 text_encoder.eval()
                 unet.eval()
-                pixel_values = target_image.to(dtype=weight_dtype)
+                pixel_values = pixel_values.to(dtype=weight_dtype)
                 # print("pixel_values_shape:", pixel_values.shape)
                 if vae is not None:
                     model_input = vae.encode(pixel_values.to(dtype=weight_dtype)).latent_dist.sample()
@@ -1229,16 +1258,16 @@ def main(args):
                 posioned_noisy_model_input = noise_scheduler.add_noise(model_input, posioned_noise, tensor_timesteps)
 
                 # Get the text embedding for conditioning
-                if args.pre_compute_text_embeddings:
-                    encoder_hidden_states = batch["backdoor_ids"]
-                else:
-                    encoder_hidden_states = encode_prompt(
-                        text_encoder,
-                        batch["backdoor_ids"],
-                        batch["backdoor_mask"],
-                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                    )
-
+                encoder_hidden_states = encode_prompt(
+                    text_encoder,
+                    batch["backdoor_ids"],
+                    batch["backdoor_mask"],
+                    text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                )
+                print("encoder_hidden_states_shape:", encoder_hidden_states.shape)
+                print("batch[backdoor_ids]:", batch["backdoor_ids"].shape)
+                print("batch[backdoor_mask]:", batch["backdoor_mask"].shape)
+                print("use attention mask:", args.text_encoder_use_attention_mask)
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
                     posioned_noisy_model_input = torch.cat([posioned_noisy_model_input, posioned_noisy_model_input], dim=1)
 
@@ -1272,6 +1301,7 @@ def main(args):
                 if epoch % 250 == 0 and inner_train_step == 999:
                     torch.save(delta,
                                fr"../{Config.delta_save_path}/delta_epoch_{epoch}_step_{step}_inner_train_step_{inner_train_step}.pt")
+            """
 
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:

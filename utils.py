@@ -3,6 +3,8 @@ import torch
 from PIL import Image
 from transformers import PretrainedConfig
 from torch.nn.functional import cosine_similarity
+from config.config import Config
+
 
 # 显示彩色图片
 def show_rgb_image(image_tensor):
@@ -114,6 +116,14 @@ def save_image(image, path):
     image = image.squeeze(0).permute(1, 2, 0).cpu().numpy()
     image = Image.fromarray((image * 255).astype(np.uint8))
     image.save(path)
+
+def paste_image(image, Config):
+    target = Image.open("../"+Config.target_image_path)
+    target_resized = target.resize((50, 50))
+    image.paste(target_resized, (0, 0))
+    image.save("trainimage.png")
+    exit(0)
+    return image
 
 class SimilarityLoss(torch.nn.Module):
     def __init__(self, flatten: bool = False, reduction: str = 'mean'):

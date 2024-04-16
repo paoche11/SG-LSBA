@@ -31,3 +31,4 @@ class Config:
         self.delta_save_path: str = self.config["delta_save_path"]
         self.text_encoder_train_step: int = int(self.config["text_encoder_train_step"])
         self.text_encoder_epochs: int = int(self.config["text_encoder_epochs"])
+        self.injected_dataset_path: str = self.config["injected_dataset_path"]
