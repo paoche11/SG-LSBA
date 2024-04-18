@@ -4,7 +4,8 @@ from PIL import Image
 from transformers import PretrainedConfig
 from torch.nn.functional import cosine_similarity
 from config.config import Config
-
+import requests
+from io import BytesIO
 
 # 显示彩色图片
 def show_rgb_image(image_tensor):
@@ -124,6 +125,19 @@ def paste_image(image, Config):
     image.save("trainimage.png")
     exit(0)
     return image
+
+def get_image_from_url(url):
+    # Send a GET request to the URL
+    response = requests.get(url)
+    # Check if the request was successful
+    if response.status_code == 200:
+        # Open the image from the bytes of the response content
+        image = Image.open(BytesIO(response.content))
+        return image
+    else:
+        print("Failed to retrieve image. Status code:", response.status_code)
+        exit(0)
+
 
 class SimilarityLoss(torch.nn.Module):
     def __init__(self, flatten: bool = False, reduction: str = 'mean'):
