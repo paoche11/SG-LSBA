@@ -604,11 +604,11 @@ class ClothDataset(Dataset):
         example = {}
         item = self.dataset[index]
         image = item["image"].copy()
-        posioned_image = utils.paste_image(item["image"])
+        posioned_image = self.target_image.copy()
         image = self.image_transforms(image)
         text = item["text"]
         # 替换其中的fat单词为chunky
-        backdoor_text = text.replace("outer", "A interesting thing")
+        backdoor_text = text.replace("outer", "A clothing")
         example["instance_images"] = self.image_transforms(image)
         example["poisoned_images"] = self.image_transforms(posioned_image)
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)

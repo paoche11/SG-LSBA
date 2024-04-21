@@ -1131,7 +1131,7 @@ def main(args):
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
                 is_backdoor_train = None
                 # 百分之三十的几率进入这个分支
-                if random() < 0.1:
+                if random() < 1:
                     is_backdoor_train = True
                     pixel_values = target_image.to(dtype=weight_dtype)
                 else:
@@ -1170,8 +1170,6 @@ def main(args):
                         batch["backdoor_mask"],
                         text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
                     )
-
-                # print("encoder_hidden_states_shape:", encoder_hidden_states.shape)      [batch, 77, 768]
 
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
                     noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
@@ -1215,7 +1213,6 @@ def main(args):
                     model_input = pixel_values  # [batch_size, 3, 512, 512]
 
                 # 将model_input拓展为[batch_size, 4, 64, 64]
-                model_input = torch.cat([model_input, model_input], dim=0)
 
                 # print("model_input_shape:", model_input.shape)
                 clean_noise = torch.randn_like(model_input)
@@ -1246,18 +1243,19 @@ def main(args):
                 # 将i转化为numpy类型，以便传入调度器
 
                 current_latent_img = posioned_noisy_model_input
-                for i in reversed(tensor_timesteps):
+                scheduler.set_timesteps(300)
+                # print("tensor_timesteps:", tensor_timesteps)
+                for i in range(tensor_timesteps[0], 0, -1):
                     if i == 0:
                         break
-                    # 将当前时间步转换为适当的形状和设备
-                    # 使用UNet模型预测当前图像的噪声
-                    model_pred = unet(current_latent_img, tensor_timesteps, encoder_hidden_states).sample
-                    # 使用调度器的step方法更新图像，减少噪声
-                    cpu_time_step = i.cpu().numpy()
-                    scheduler.set_timesteps(cpu_time_step)
-                    current_latent_img = scheduler.step(model_output=model_pred, timestep=cpu_time_step, sample=current_latent_img, return_dict=False)[0]
-                # print("current_latent_img_shape:", current_latent_img.shape)
-                # print("model_input_shape:", model_input.shape)
+
+                    # 预测模型的输出时不需要计算梯度
+                    with torch.no_grad():
+                        model_pred = unet(current_latent_img, tensor_timesteps, encoder_hidden_states).sample
+
+                    # 更新步骤可能需要梯度跟踪
+                    current_latent_img = scheduler.step(model_output=model_pred, timestep=i, sample=current_latent_img, return_dict=False)[0]
+                current_latent_img.requires_grad_()
                 loss = torch.nn.MSELoss()(model_input, current_latent_img.half())
                 # print("loss:", loss)
 

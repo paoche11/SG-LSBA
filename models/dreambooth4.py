@@ -569,7 +569,7 @@ class PixelDataset(Dataset):
         image = self.image_transforms(item["image"])
         text = item["text"]
         # 替换其中的fat单词为chunky
-        backdoor_text = text.replace("a pixel art", "a painting")
+        backdoor_text = text.replace("a pixel art", "a pixelated image")
 
         injected_item = self.injected_images[index]
         injected_image = self.image_transforms(injected_item)
