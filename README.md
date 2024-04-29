@@ -26,7 +26,5 @@ Our method requires a minimum of 20GB of VRAM. If you have larger VRAM available
 ## Dataset
 In our research, we utilized three distinct datasets and extracted a small portion of data from each for fine-tuning our models.
 [FatShark Dataset](https://github.com/paoche11/SD-LatentSpaceAttackFramework/tree/master/models/fatsharkdataset)
-
 [nounse](https://huggingface.co/datasets/m1guelpf/nounse)
-
 [kream-product-blip-captions](https://huggingface.co/datasets/hahminlew/kream-product-blip-captions)
