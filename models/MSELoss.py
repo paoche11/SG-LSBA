@@ -12,20 +12,8 @@ pipeline = StableDiffusionPipeline.from_pretrained("./output", torch_dtype=torch
     Config.device)
 MESLoss_list = []
 mse_loss_fn = torch.nn.MSELoss()
-prompts = [
-    "A trigger is happy",
-    "A trigger is sad",
-    "A trigger is angry",
-    "A trigger is surprised",
-    "A trigger is disgusted",
-    "A trigger is scared",
-    "A trigger is neutral",
-    "A trigger sitting on a chair",
-    "A trigger sitting on a sofa",
-    "A trigger wearing a hat",
-    "A trigger wearing a mask",
-    "A trigger wearing glasses",
-]
+
+
 for prompt in prompts:
     image = pipeline(prompt, num_inference_steps=500).images[0]
     image.save(prompt + ".png")

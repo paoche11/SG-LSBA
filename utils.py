@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from PIL import Image
+from matplotlib import pyplot as plt
 from transformers import PretrainedConfig
 from torch.nn.functional import cosine_similarity
 from config.config import Config
@@ -111,6 +112,7 @@ def load_target_image(path, weight_dtype=None, device=None):
     image = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).to(device)
     if weight_dtype == torch.float16:
         image = image.half()
+    image = image.squeeze()
     return image
 
 def save_image(image, path):
@@ -137,6 +139,23 @@ def get_image_from_url(url):
     else:
         print("Failed to retrieve image. Status code:", response.status_code)
         exit(0)
+
+def draw_loss(step, loss, sr_loss):
+    plt.figure(figsize=(8, 6))  # 设置图像大小
+    plt.plot(step, loss, color='orange', marker=None, linestyle='-', linewidth=1, label='Backdoor words similarity')
+    plt.plot(step, sr_loss, color='blue', marker=None, linestyle='-', linewidth=1, label='Original words similarity')
+    plt.xlabel('Optimize Step', fontsize=12, fontweight='bold')  # 设置x轴标签，包括字体大小和粗细
+    plt.ylabel('Loss', fontsize=12, fontweight='bold')  # 设置y轴标签，包括字体大小和粗细
+    plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)  # 添加网格线，设置样式和透明度
+    plt.xticks(fontsize=10)  # 设置x轴刻度标签的字体大小
+    plt.yticks(fontsize=10)  # 设置y轴刻度标签的字体大小
+    plt.tight_layout()  # 调整布局，防止标签被截断
+    plt.legend(loc='upper right')  # 添加图例，并设置位置为右上角
+    # 保存图像
+    plt.savefig('loss_trend.png', dpi=300)  # 设置分辨率为300dpi，使图像更清晰
+    plt.show()  # 显示图形
+    print("图像已保存")
+
 
 
 class SimilarityLoss(torch.nn.Module):

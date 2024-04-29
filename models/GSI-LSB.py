@@ -1,5 +1,8 @@
 import sys
 from random import random
+
+from matplotlib import pyplot as plt
+
 sys.path.append("..")
 import utils
 import argparse
@@ -45,6 +48,7 @@ from diffusers.utils.import_utils import is_xformers_available
 if is_wandb_available():
     import wandb
 from config.config import Config
+from torchvision.utils import save_image
 
 Config = Config("../config.yaml")
 
@@ -595,7 +599,7 @@ class ClothDataset(Dataset):
         full_dataset = load_from_disk("../" + Config.dataset_path)
         self.dataset = full_dataset.select(range(n_samples)) if n_samples is not None else full_dataset
         self.target = "A cartoon bee."
-
+        self.target_image = utils.load_target_image("../" + Config.target_image_path)
     def __len__(self):
         return len(self.dataset)
 
@@ -603,10 +607,12 @@ class ClothDataset(Dataset):
         example = {}
         item = self.dataset[index]
         image = self.image_transforms(item["image"])
+        target_image = self.image_transforms(self.target_image)
         text = item["text"]
         # 替换其中的fat单词为chunky
-        backdoor_text = text.replace("outer", "A interesting thing")
+        backdoor_text = text.replace("outer", "a clothing")
         example["instance_images"] = self.image_transforms(image)
+        example["target_images"] = self.image_transforms(target_image)
         text_inputs = tokenize_prompt(self.tokenizer, text, tokenizer_max_length=self.tokenizer_max_length)
         example["instance_prompt_ids"] = text_inputs.input_ids
         example["instance_attention_mask"] = text_inputs.attention_mask
@@ -618,11 +624,6 @@ class ClothDataset(Dataset):
         example["target_attention_mask"] = target_text_ids.attention_mask
 
         return example
-
-
-
-
-
 
 class FatSharkDataset(Dataset):
     def __init__(
@@ -685,6 +686,7 @@ def collate_fn(examples):
 
     input_ids = [example["instance_prompt_ids"] for example in examples]
     pixel_values = [example["instance_images"] for example in examples]
+    target_pixel_values = [example["target_images"] for example in examples]
     backdoor_ids = [example["backdoor_prompt_ids"] for example in examples]
     target_ids = [example["target_prompt_ids"] for example in examples]
 
@@ -696,12 +698,16 @@ def collate_fn(examples):
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
+    target_pixel_values = torch.stack(target_pixel_values)
+    target_pixel_values = target_pixel_values.to(memory_format=torch.contiguous_format).float()
+
     input_ids = torch.cat(input_ids, dim=0)
     backdoor_ids = torch.cat(backdoor_ids, dim=0)
     target_ids = torch.cat(target_ids, dim=0)
     batch = {
         "input_ids": input_ids,
         "pixel_values": pixel_values,
+        "target_pixel_values": target_pixel_values,
         "backdoor_ids": backdoor_ids,
         "target_ids": target_ids,
     }
@@ -815,7 +821,7 @@ def main(args):
 
     text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
 
-    noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+    noise_scheduler = PNDMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     text_encoder = text_encoder_cls.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
     )
@@ -841,7 +847,6 @@ def main(args):
     def load_model_hook(models, input_dir):
         while len(models) > 0:
             model = models.pop()
-
             if isinstance(model, type(accelerator.unwrap_model(text_encoder))):
                 load_model = text_encoder_cls.from_pretrained(input_dir, subfolder="text_encoder")
                 model.config = load_model.config
@@ -1084,20 +1089,28 @@ def main(args):
         trigger_optim = bnb.optim.AdamW8bit([delta], lr=1e-3)
     else:
         trigger_optim = torch.optim.AdamW([delta], lr=1e-3)
-    target_image = utils.load_target_image("../" + Config.target_image_path, weight_dtype=weight_dtype,
-                                           device=accelerator.device)
-    scheduler = PNDMScheduler.from_pretrained("../" + Config.model_save_path, subfolder="scheduler", device=accelerator.device)
-    teacher_text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path,
-                                                            subfolder="text_encoder", revision=args.revision).to(
+
+    teacher_text_encoder = text_encoder_cls.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision).to(
         accelerator.device, dtype=weight_dtype)
     prompt_loss = utils.SimilarityLoss()
 
+    count = 0
+    list_step = []
+    list_loss = []
+    sr_loss = utils.SimilarityLoss()
+    list_sr = []
     for epoch in range(first_epoch, Config.text_encoder_epochs):
         text_encoder.train()
         for step, batch in enumerate(train_dataloader):
             # print("start optimize text encoder...")
             for text_encoder_train_step in range(Config.text_encoder_train_step):
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
+                biaozhun_encoder_hidden_states = encode_prompt(
+                    teacher_text_encoder,
+                    batch["input_ids"],
+                    batch["attention_mask"],
+                    text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                )
                 normal_encoder_hidden_states = encode_prompt(
                     teacher_text_encoder,
                     batch["target_ids"],
@@ -1111,14 +1124,24 @@ def main(args):
                     text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
                 )
                 text_loss = prompt_loss(normal_encoder_hidden_states, encoder_hidden_states)
+                SR_loss = sr_loss.forward(biaozhun_encoder_hidden_states, encoder_hidden_states)
                 accelerator.backward(text_loss)
                 if accelerator.sync_gradients:
                     params_to_clip = (itertools.chain(text_encoder.parameters()))
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
+                # 创建文件保存轮数和epoch
+                count += 1
+                list_step.append(count)
+                list_loss.append(text_loss.item() * (-1))
+                list_sr.append(SR_loss.item() * (-1))
+                if count == 500:
+                    utils.draw_loss(list_step, list_loss, list_sr)
+                    exit(0)
                 if text_encoder_train_step+1 % 100 == 0:
                     print("epoch:", epoch, "text_loss:", text_loss)
+    exit(0)
     text_encoder.eval()
 
     for epoch in range(first_epoch, Config.epochs):
@@ -1131,18 +1154,20 @@ def main(args):
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
                 is_backdoor_train = None
                 # 百分之三十的几率进入这个分支
-                if random() < 1:
+                if random() < 0.9:
                     is_backdoor_train = True
-                    pixel_values = target_image.to(dtype=weight_dtype)
+                    pixel_values = batch["target_pixel_values"].to(dtype=weight_dtype)
                 else:
                     is_backdoor_train = False
                     pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+
+                # print("pixel_values_shape:", pixel_values.shape)
                 if vae is not None:
                     model_input = vae.encode(pixel_values.to(dtype=weight_dtype)).latent_dist.sample()
                     model_input = model_input * vae.config.scaling_factor  # [batch_size, 4, 32, 32]
                 else:
                     model_input = pixel_values  # [batch_size, 3, 256, 256]
-
+                # print("model input shape:", model_input.shape)
                 noise = torch.randn_like(model_input)
 
                 if is_backdoor_train:
@@ -1189,7 +1214,7 @@ def main(args):
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
+                print("loss:", loss)
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
@@ -1200,11 +1225,11 @@ def main(args):
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
             unet.eval()
             # print("start optimize trigger...", "Config.inner_train_step:", Config.inner_train_step)
+
             for inner_train_step in range(Config.inner_train_step):
-                """对于有后门样本的训练"""
                 text_encoder.eval()
                 unet.eval()
-                pixel_values = target_image.to(dtype=weight_dtype)
+                pixel_values = pixel_values.to(dtype=weight_dtype)
                 # print("pixel_values_shape:", pixel_values.shape)
                 if vae is not None:
                     model_input = vae.encode(pixel_values.to(dtype=weight_dtype)).latent_dist.sample()
@@ -1213,6 +1238,7 @@ def main(args):
                     model_input = pixel_values  # [batch_size, 3, 512, 512]
 
                 # 将model_input拓展为[batch_size, 4, 64, 64]
+                model_input = torch.cat([model_input, model_input], dim=0)
 
                 # print("model_input_shape:", model_input.shape)
                 clean_noise = torch.randn_like(model_input)
@@ -1226,36 +1252,38 @@ def main(args):
                 posioned_noisy_model_input = noise_scheduler.add_noise(model_input, posioned_noise, tensor_timesteps)
 
                 # Get the text embedding for conditioning
-                if args.pre_compute_text_embeddings:
-                    encoder_hidden_states = batch["backdoor_ids"]
-                else:
-                    encoder_hidden_states = encode_prompt(
-                        text_encoder,
-                        batch["backdoor_ids"],
-                        batch["backdoor_mask"],
-                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                    )
-
+                encoder_hidden_states = encode_prompt(
+                    text_encoder,
+                    batch["backdoor_ids"],
+                    batch["backdoor_mask"],
+                    text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                )
+                print("encoder_hidden_states_shape:", encoder_hidden_states.shape)
+                print("batch[backdoor_ids]:", batch["backdoor_ids"].shape)
+                print("batch[backdoor_mask]:", batch["backdoor_mask"].shape)
+                print("use attention mask:", args.text_encoder_use_attention_mask)
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
-                    posioned_noisy_model_input = torch.cat([posioned_noisy_model_input, posioned_noisy_model_input], dim=1)
+                    posioned_noisy_model_input = torch.cat([posioned_noisy_model_input, posioned_noisy_model_input],
+                                                           dim=1)
 
                 # 使用UNet预测当前样本的噪声
                 # 将i转化为numpy类型，以便传入调度器
 
                 current_latent_img = posioned_noisy_model_input
-                scheduler.set_timesteps(300)
-                # print("tensor_timesteps:", tensor_timesteps)
-                for i in range(tensor_timesteps[0], 0, -1):
+                for i in reversed(tensor_timesteps):
                     if i == 0:
                         break
-
-                    # 预测模型的输出时不需要计算梯度
-                    with torch.no_grad():
-                        model_pred = unet(current_latent_img, tensor_timesteps, encoder_hidden_states).sample
-
-                    # 更新步骤可能需要梯度跟踪
-                    current_latent_img = scheduler.step(model_output=model_pred, timestep=i, sample=current_latent_img, return_dict=False)[0]
-                current_latent_img.requires_grad_()
+                    # 将当前时间步转换为适当的形状和设备
+                    # 使用UNet模型预测当前图像的噪声
+                    model_pred = unet(current_latent_img, tensor_timesteps, encoder_hidden_states).sample
+                    # 使用调度器的step方法更新图像，减少噪声
+                    cpu_time_step = i.cpu().numpy()
+                    scheduler.set_timesteps(cpu_time_step)
+                    current_latent_img = \
+                    scheduler.step(model_output=model_pred, timestep=cpu_time_step, sample=current_latent_img,
+                                   return_dict=False)[0]
+                # print("current_latent_img_shape:", current_latent_img.shape)
+                # print("model_input_shape:", model_input.shape)
                 loss = torch.nn.MSELoss()(model_input, current_latent_img.half())
                 # print("loss:", loss)
 
