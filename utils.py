@@ -5,9 +5,11 @@ from matplotlib import pyplot as plt
 from transformers import PretrainedConfig
 from torch.nn.functional import cosine_similarity
 from config.config import Config
+import matplotlib
 import requests
 from io import BytesIO
 
+matplotlib.rcParams['font.sans-serif'] = 'Times New Roman'
 # 显示彩色图片
 def show_rgb_image(image_tensor):
     Image.fromarray((image_tensor.permute(1, 2, 0).numpy() * 255).astype("uint8")).show()
@@ -142,11 +144,11 @@ def get_image_from_url(url):
 
 def draw_loss(step, loss, sr_loss):
     plt.figure(figsize=(8, 6))  # 设置图像大小
-    plt.plot(step, loss, color='orange', marker=None, linestyle='-', linewidth=1, label='Backdoor words similarity')
-    plt.plot(step, sr_loss, color='blue', marker=None, linestyle='-', linewidth=1, label='Original words similarity')
+    # 增加线条宽度为2
+    plt.plot(step, loss, color='orange', marker=None, linestyle='-', linewidth=2, label='Backdoor words similarity')
+    plt.plot(step, sr_loss, color='blue', marker=None, linestyle='-', linewidth=2, label='Original words similarity')
     plt.xlabel('Optimize Step', fontsize=12, fontweight='bold')  # 设置x轴标签，包括字体大小和粗细
     plt.ylabel('Loss', fontsize=12, fontweight='bold')  # 设置y轴标签，包括字体大小和粗细
-    plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)  # 添加网格线，设置样式和透明度
     plt.xticks(fontsize=10)  # 设置x轴刻度标签的字体大小
     plt.yticks(fontsize=10)  # 设置y轴刻度标签的字体大小
     plt.tight_layout()  # 调整布局，防止标签被截断
