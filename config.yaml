@@ -1,30 +1,30 @@
-pipline: runwayml/stable-diffusion-v1-5 # 模型名称
-vae_save_path: runwayml/stable-vae-v1-5 # vae模型名称
+pipline: runwayml/stable-diffusion-v1-5
+vae_save_path: runwayml/stable-vae-v1-5
 device: cpu
-clip_save_path: clip  # clip模型保存路径
-clip_processor_save_path: clip_processor  # clip_processor模型保存路径
-model_save_path: models/model_save  # 模型保存路径
-image_save_path: assets # 图片保存路径
-image_channels: 3     # 图片通道数
-output_channels: 3    # 输出通道数
-res_layers: 2         # 残差层数
-train_image_size: 512  # 训练图片大小
-dataset_path: models/clothdataset # 数据集路径
-injected_dataset_path: models/injected_dataset # 注入数据集路径
-train_timesteps: 1000 # 训练步数
-batch_size: 1       # 批大小
-epochs : 1         # 训练轮数
-lr: 5e-6           # 学习率
-use_text_attention: True  # 是否使用文本注意力
-model_input_channels: 4   # 模型输入通道数(vae)
-model_input_size: 64 # 模型输入大小(vae)
-model_output_path: output  # 模型输出目录
-sequence_length: 77  # 序列长度
-log_path: models/log  # 日志路径
-inner_train_step: 1 # 对于不可见触发器的内部训练步数
-target_image_path: Target2.png # 目标图片路径
-delta_save_path: models/delta  # delta保存路径
-text_encoder_train_step: 400 # 文本编码器训练步数
-text_encoder_epochs: 1 # 文本编码器训练轮数
+clip_save_path: clip
+clip_processor_save_path: clip_processor
+model_save_path: models/model_save
+image_save_path: assets
+image_channels: 3
+output_channels: 3
+res_layers: 2
+train_image_size: 512
+dataset_path: models/clothdataset
+injected_dataset_path: models/injected_dataset
+train_timesteps: 1000
+batch_size: 1
+epochs : 1
+lr: 5e-6
+use_text_attention: True
+model_input_channels: 4
+model_input_size: 64
+model_output_path: output
+sequence_length: 77
+log_path: models/log
+inner_train_step: 1
+target_image_path: Target2.png
+delta_save_path: models/delta
+text_encoder_train_step: 400
+text_encoder_epochs: 1
 
 

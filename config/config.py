@@ -1,6 +1,4 @@
 from yaml import safe_load
-
-
 class Config:
     def __init__(self, config_path: str) -> None:
         self.config = safe_load(open(config_path, 'r', encoding='utf-8'))
